@@ -6,6 +6,7 @@ import numpy as np
 import logging
 import time
 import os
+import sys
 from typing import Optional, List, Tuple
 from dataclasses import dataclass
 
@@ -13,7 +14,30 @@ from aircontrol.config import CONFIG
 
 logger = logging.getLogger(__name__)
 
-MODEL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models", "hand_landmarker.task"))
+
+def _model_path() -> str:
+    candidates = [
+        os.path.abspath(
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "..",
+                "..",
+                "models",
+                "hand_landmarker.task",
+            )
+        )
+    ]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(os.path.join(meipass, "models", "hand_landmarker.task"))
+        candidates.append(os.path.join(meipass, "hand_landmarker.task"))
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[0]
+
+
+MODEL_PATH = _model_path()
 
 
 @dataclass

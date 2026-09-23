@@ -134,13 +134,38 @@ models/                    # hand_landmarker.task (downloaded, git-ignored)
 pyinstaller --noconfirm --clean --windowed \
   --name "AirControl" \
   --icon=assets/AirControl.icns \
-  --add-data "aircontrol:aircontrol" \
-  --add-data "models:models" \
+  --collect-all mediapipe \
+  --add-data "models/hand_landmarker.task:models" \
   --osx-bundle-identifier=com.aircontrol.app \
   aircontrol/main.py
 ```
 
-Then set `LSUIElement=true` in the generated `Info.plist` (menu-bar-only, no Dock icon / Terminal), ad-hoc sign for local use (`codesign -s -`), and grant Camera + Accessibility to the `.app` itself on first launch.
+`--collect-all mediapipe` is required — without it the bundle crashes at
+startup with `No module named 'mediapipe.tasks.c'`. Then stamp the bundle:
+
+```bash
+PLIST="dist/AirControl.app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$PLIST"
+/usr/libexec/PlistBuddy -c "Add :NSCameraUsageDescription string 'AirControl needs camera access to recognize hand gestures locally on your Mac.'" "$PLIST"
+/usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 0.1.0" "$PLIST"
+/usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 0.1.0" "$PLIST"
+codesign --force --deep -s - dist/AirControl.app
+```
+
+`LSUIElement` makes it menu-bar-only (no Dock icon / Terminal). On first launch, grant Camera + Accessibility to `AirControl.app` itself.
+
+## Releases
+
+Versions live in `aircontrol/__init__.py` (`__version__`) and the bundle's `Info.plist`. To cut a release:
+
+```bash
+# 1. bump __version__, commit
+# 2. tag and push
+git tag -a v0.1.0 -m "AirControl 0.1.0"
+git push origin v0.1.0
+# 3. zip the app and attach it to a GitHub Release for the tag
+ditto -c -k --sequesterRsrc dist/AirControl.app AirControl-0.1.0-mac-arm64.zip
+```
 
 ## Privacy
 
