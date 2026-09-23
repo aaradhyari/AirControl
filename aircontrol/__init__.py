@@ -1,0 +1,1 @@
+"""AirControl - macOS menu-bar hand gesture recognition."""

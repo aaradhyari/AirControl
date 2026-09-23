@@ -6,8 +6,8 @@ from typing import Optional, List, Tuple
 from dataclasses import dataclass, field
 import numpy as np
 
-from gesture_control.config import CONFIG
-from gesture_control.vision.hand_tracker import HandLandmarks
+from aircontrol.config import CONFIG
+from aircontrol.vision.hand_tracker import HandLandmarks
 
 logger = logging.getLogger(__name__)
 

@@ -1,4 +1,4 @@
-# Gesture Control
+# AirControl
 
 A native macOS menu-bar app that watches your MacBook's built-in camera, recognizes hand gestures locally, and drives system functions — media, Spaces, fullscreen, volume. No terminal window, no cloud, no recording.
 
@@ -19,14 +19,14 @@ One presentation = one action. Holding a gesture never repeats it; a different g
 
 - macOS on Apple Silicon (M1/M2/M3/M4)
 - Python 3.11–3.13
-- Camera permission (for your terminal, or for `GestureControl.app` once packaged)
+- Camera permission (for your terminal, or for `AirControl.app` once packaged)
 - Accessibility permission (for Space switching and simulated keys)
 
 ## Quick start
 
 ```bash
-git clone <your-repo-url> GestureControl
-cd GestureControl
+git clone <your-repo-url> AirControl
+cd AirControl
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -37,7 +37,7 @@ mkdir -p models
 curl -L -o models/hand_landmarker.task \
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task"
 
-python -m gesture_control.main
+python -m aircontrol.main
 ```
 
 > **Note:** `mediapipe` is pinned to `==0.10.35` on purpose — 1.0.x aborts on Apple Silicon inside `DrishtiMetalHelper` at landmarker creation. Do not relax this without testing on-device.
@@ -47,9 +47,9 @@ Grant permissions when macOS asks (or pre-grant in System Settings → Privacy &
 ## Running
 
 ```bash
-python -m gesture_control.main           # menu-bar app (stays in foreground of this shell)
-python -m gesture_control.main --debug   # verbose per-frame state
-python -m gesture_control.main --test    # recognition runs, no macOS actions fire
+python -m aircontrol.main           # menu-bar app (stays in foreground of this shell)
+python -m aircontrol.main --debug   # verbose per-frame state
+python -m aircontrol.main --test    # recognition runs, no macOS actions fire
 python test_gesture.py                   # calibration console: hand / fingers / gesture / FPS / state
 python test_gesture.py --video           # same, plus landmark overlay window
 ```
@@ -77,7 +77,7 @@ Menu-bar icon: **●** enabled · **○** disabled · **⚠** camera unavailable
 
 ## Configuration
 
-Everything lives in `gesture_control/config.py` (dataclasses, no other files to touch):
+Everything lives in `aircontrol/config.py` (dataclasses, no other files to touch):
 
 ```python
 CameraConfig:   index=0, width=640, height=480, target_fps=30
@@ -96,7 +96,7 @@ If your Mission Control shortcuts differ from `Ctrl+←/→`, update `left_space
 ## Project layout
 
 ```
-gesture_control/
+aircontrol/
 ├── main.py                 # entry point, permission checks, orchestration
 ├── config.py               # all tunables (see above)
 ├── camera/camera.py        # threaded capture, callbacks, clean teardown
@@ -124,17 +124,17 @@ models/                    # hand_landmarker.task (downloaded, git-ignored)
 | `DrishtiMetalHelper` abort at startup | You installed mediapipe 1.x — `pip install "mediapipe==0.10.35"` |
 | High CPU | Lower `target_fps` / resolution; processing idles when no hand is visible |
 
-## Packaging as GestureControl.app
+## Packaging as AirControl.app
 
 `pip install pyinstaller`, then e.g.:
 
 ```bash
 pyinstaller --noconfirm --clean --windowed \
-  --name "Gesture Control" \
-  --add-data "gesture_control:gesture_control" \
+  --name "AirControl" \
+  --add-data "aircontrol:aircontrol" \
   --add-data "models:models" \
-  --osx-bundle-identifier=com.gesturecontrol.app \
-  gesture_control/main.py
+  --osx-bundle-identifier=com.aircontrol.app \
+  aircontrol/main.py
 ```
 
 Then set `LSUIElement=true` in the generated `Info.plist` (menu-bar-only, no Dock icon / Terminal), ad-hoc sign for local use (`codesign -s -`), and grant Camera + Accessibility to the `.app` itself on first launch.

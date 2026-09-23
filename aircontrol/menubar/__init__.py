@@ -1,0 +1,1 @@
+"""Menu bar module for AirControl."""

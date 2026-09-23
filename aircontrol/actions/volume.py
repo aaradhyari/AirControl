@@ -2,7 +2,7 @@ import logging
 import subprocess
 from typing import Tuple
 
-from gesture_control.config import CONFIG
+from aircontrol.config import CONFIG
 
 logger = logging.getLogger(__name__)
 

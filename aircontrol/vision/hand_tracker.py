@@ -9,7 +9,7 @@ import os
 from typing import Optional, List, Tuple
 from dataclasses import dataclass
 
-from gesture_control.config import CONFIG
+from aircontrol.config import CONFIG
 
 logger = logging.getLogger(__name__)
 

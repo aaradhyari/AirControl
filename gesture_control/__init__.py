@@ -1,1 +1,0 @@
-"""Gesture Control - macOS menu-bar hand gesture recognition."""

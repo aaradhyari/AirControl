@@ -5,7 +5,7 @@ import time
 from typing import Optional, Callable, Tuple
 import numpy as np
 
-from gesture_control.config import CONFIG, CameraConfig
+from aircontrol.config import CONFIG, CameraConfig
 
 logger = logging.getLogger(__name__)
 

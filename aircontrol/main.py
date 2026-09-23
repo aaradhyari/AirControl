@@ -13,15 +13,15 @@ import signal
 import argparse
 from typing import Optional
 
-from gesture_control.config import CONFIG
-from gesture_control.camera.camera import Camera
-from gesture_control.vision.hand_tracker import HandTracker
-from gesture_control.vision.gesture_recognizer import GestureRecognizer, GestureType, GestureState, GestureResult
-from gesture_control.actions.media import play_pause
-from gesture_control.actions.desktop import switch_space
-from gesture_control.actions.fullscreen import toggle_fullscreen
-from gesture_control.actions.volume import volume_up, volume_down
-from gesture_control.menubar.app import run_menu_bar_app, GestureMenuBarApp
+from aircontrol.config import CONFIG
+from aircontrol.camera.camera import Camera
+from aircontrol.vision.hand_tracker import HandTracker
+from aircontrol.vision.gesture_recognizer import GestureRecognizer, GestureType, GestureState, GestureResult
+from aircontrol.actions.media import play_pause
+from aircontrol.actions.desktop import switch_space
+from aircontrol.actions.fullscreen import toggle_fullscreen
+from aircontrol.actions.volume import volume_up, volume_down
+from aircontrol.menubar.app import run_menu_bar_app, GestureMenuBarApp
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,7 +31,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class GestureControlApp:
+class AirControlApp:
     def __init__(self, debug_mode: bool = False):
         self.debug_mode = debug_mode
         if debug_mode:
@@ -54,7 +54,7 @@ class GestureControlApp:
         self._fps_start = time.time()
 
     def start(self) -> None:
-        logger.info("Gesture Control started")
+        logger.info("AirControl started")
 
         access_ok = _check_accessibility()
         if not access_ok:
@@ -186,7 +186,7 @@ class GestureControlApp:
             return
 
         self.running = False
-        logger.info("Stopping Gesture Control...")
+        logger.info("Stopping AirControl...")
 
         self.camera.stop()
         self.hand_tracker.close()
@@ -197,7 +197,7 @@ class GestureControlApp:
         if self._processing_thread and self._processing_thread.is_alive():
             self._processing_thread.join(timeout=2.0)
 
-        logger.info("Gesture Control stopped")
+        logger.info("AirControl stopped")
 
 
 def _check_accessibility() -> bool:
@@ -212,7 +212,7 @@ def _check_accessibility() -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Gesture Control - macOS menu-bar hand gesture recognition")
+    parser = argparse.ArgumentParser(description="AirControl - macOS menu-bar hand gesture recognition")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode with console output")
     parser.add_argument("--test", action="store_true", help="Run in test mode (no macOS actions)")
     args = parser.parse_args()
@@ -221,7 +221,7 @@ def main() -> int:
         CONFIG.app.debug_mode = True
         logger.info("Running in TEST MODE - no macOS actions will be executed")
 
-    app = GestureControlApp(debug_mode=args.debug or CONFIG.app.debug_mode)
+    app = AirControlApp(debug_mode=args.debug or CONFIG.app.debug_mode)
 
     try:
         app.start()

@@ -29,8 +29,8 @@ from AppKit import (
 from Foundation import NSAutoreleasePool
 from PyObjCTools import AppHelper
 
-from gesture_control.config import CONFIG
-from gesture_control.vision.gesture_recognizer import GestureType
+from aircontrol.config import CONFIG
+from aircontrol.vision.gesture_recognizer import GestureType
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ class GestureMenuBarApp(NSObject):
         self._menu = NSMenu.alloc().init()
 
         title_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "✋ Gesture Control", None, ""
+            "✋ AirControl", None, ""
         )
         title_item.setEnabled_(False)
         self._menu.addItem_(title_item)

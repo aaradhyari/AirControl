@@ -1,1 +1,0 @@
-"""Camera module for Gesture Control."""

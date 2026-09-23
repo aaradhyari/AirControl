@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test/Debug mode for Gesture Control.
+Test/Debug mode for AirControl.
 Runs gesture recognition without executing macOS actions.
 Shows real-time debug information.
 """
@@ -16,12 +16,12 @@ import time
 import logging
 import argparse
 
-sys.path.insert(0, '/Users/aaradhya-rai/GestureControl')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from gesture_control.config import CONFIG
-from gesture_control.camera.camera import Camera
-from gesture_control.vision.hand_tracker import HandTracker
-from gesture_control.vision.gesture_recognizer import GestureRecognizer, GestureType, GestureState
+from aircontrol.config import CONFIG
+from aircontrol.camera.camera import Camera
+from aircontrol.vision.hand_tracker import HandTracker
+from aircontrol.vision.gesture_recognizer import GestureRecognizer, GestureType, GestureState
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,7 +70,7 @@ def run_test_mode(show_video: bool = False) -> None:
             display_frame = frame.copy()
             if hand:
                 display_frame = hand_tracker.draw_landmarks(display_frame, hand)
-            cv2.imshow("Gesture Control - Test Mode", display_frame)
+            cv2.imshow("AirControl - Test Mode", display_frame)
 
     camera.set_frame_callback(process_frame)
 
@@ -129,7 +129,7 @@ def print_debug_info(hand, result, fps: float, recognizer: GestureRecognizer) ->
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Gesture Control Test Mode")
+    parser = argparse.ArgumentParser(description="AirControl Test Mode")
     parser.add_argument("--video", action="store_true", help="Show video window with landmarks")
     args = parser.parse_args()
 
