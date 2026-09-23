@@ -1,6 +1,6 @@
 # AirControl
 
-<img src="assets/icon-256.png" alt="AirControl icon" width="128" />
+<img src="assets/aircontrol-logo.png" alt="AirControl logo" width="360" />
 
 A native macOS menu-bar app that watches your MacBook's built-in camera, recognizes hand gestures locally, and drives system functions — media, Spaces, fullscreen, volume. No terminal window, no cloud, no recording.
 
