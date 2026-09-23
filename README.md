@@ -1,5 +1,7 @@
 # AirControl
 
+<img src="assets/icon-256.png" alt="AirControl icon" width="128" />
+
 A native macOS menu-bar app that watches your MacBook's built-in camera, recognizes hand gestures locally, and drives system functions — media, Spaces, fullscreen, volume. No terminal window, no cloud, no recording.
 
 ## Gestures
@@ -131,6 +133,7 @@ models/                    # hand_landmarker.task (downloaded, git-ignored)
 ```bash
 pyinstaller --noconfirm --clean --windowed \
   --name "AirControl" \
+  --icon=assets/AirControl.icns \
   --add-data "aircontrol:aircontrol" \
   --add-data "models:models" \
   --osx-bundle-identifier=com.aircontrol.app \
