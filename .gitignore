@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# MediaPipe model binary (downloaded via README quick start)
+models/
+
+# macOS
+.DS_Store
+
+# Build / packaging
+dist/
+build/
+*.egg-info/
+
+# Debug artifacts
+debug_frame_*.jpg

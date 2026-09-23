@@ -1,0 +1,1 @@
+"""Vision module for Gesture Control."""
