@@ -7,8 +7,8 @@ import logging
 import time
 import os
 import sys
-from typing import Optional, List, Tuple
-from dataclasses import dataclass
+from typing import Optional, List, Tuple, Dict
+from dataclasses import dataclass, field
 
 from aircontrol.config import CONFIG
 
@@ -71,7 +71,7 @@ class HandTracker:
         options = vision.HandLandmarkerOptions(
             base_options=base_options,
             running_mode=vision.RunningMode.LIVE_STREAM,
-            num_hands=1,
+            num_hands=2,
             min_hand_detection_confidence=0.5,
             min_hand_presence_confidence=0.5,
             min_tracking_confidence=0.5,
@@ -82,9 +82,17 @@ class HandTracker:
         self._latest_result = None
         self._result_ready = False
 
-        self._landmark_history: List[np.ndarray] = []
-        self._center_history: List[Tuple[float, float, float]] = []
+        # Per-hand histories keyed by MediaPipe handedness label
+        # ("Left"/"Right") so one hand's state never overwrites the other's.
+        self._histories: Dict[str, Dict[str, list]] = {}
         self._max_history = 10
+
+    def _hist(self, label: str) -> Dict[str, list]:
+        entry = self._histories.get(label)
+        if entry is None:
+            entry = {"landmarks": [], "centers": []}
+            self._histories[label] = entry
+        return entry
 
     def _result_callback(
         self,
@@ -95,7 +103,10 @@ class HandTracker:
         self._latest_result = result
         self._result_ready = True
 
-    def process(self, frame: np.ndarray) -> Optional[HandLandmarks]:
+    def process(self, frame: np.ndarray) -> List[HandLandmarks]:
+        """Detect up to 2 hands. Returns one HandLandmarks per hand
+        (possibly empty). Never uses screen position for identity --
+        handedness comes straight from MediaPipe."""
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
         timestamp_ms = int(time.time() * 1000)
@@ -110,66 +121,104 @@ class HandTracker:
 
         if self._latest_result is None:
             self._clear_history()
-            return None
+            return []
 
         result = self._latest_result
 
         if not result.hand_landmarks:
             self._clear_history()
-            return None
-
-        hand_landmarks = result.hand_landmarks[0]
-        handedness = result.handedness[0][0].category_name if result.handedness else "Right"
-        score = result.handedness[0][0].score if result.handedness else 1.0
-
-        landmarks = np.array(
-            [[lm.x, lm.y, lm.z] for lm in hand_landmarks], dtype=np.float32
-        )
+            return []
 
         h, w = frame.shape[:2]
-        center_x = np.mean(landmarks[:, 0]) * w
-        center_y = np.mean(landmarks[:, 1]) * h
+        hands: List[HandLandmarks] = []
+        seen_labels = set()
+        for hand_landmarks, handedness_info in zip(
+            result.hand_landmarks, result.handedness or []
+        ):
+            label = (
+                handedness_info[0].category_name
+                if handedness_info
+                else "Unknown"
+            )
+            score = handedness_info[0].score if handedness_info else 1.0
+            if label in seen_labels:
+                # Degenerate duplicate label: keep the higher-score hand so
+                # per-hand state keyed by label can never collide.
+                prev = next(h for h in hands if h.handedness == label)
+                if score <= prev.score:
+                    continue
+                hands.remove(prev)
+            seen_labels.add(label)
 
-        x_coords = landmarks[:, 0] * w
-        y_coords = landmarks[:, 1] * h
-        bbox = (
-            int(np.min(x_coords)),
-            int(np.min(y_coords)),
-            int(np.max(x_coords)),
-            int(np.max(y_coords)),
-        )
+            landmarks = np.array(
+                [[lm.x, lm.y, lm.z] for lm in hand_landmarks], dtype=np.float32
+            )
 
-        self._landmark_history.append(landmarks)
-        self._center_history.append((center_x, center_y, time.time()))
-        if len(self._landmark_history) > self._max_history:
-            self._landmark_history.pop(0)
-        if len(self._center_history) > self._max_history:
-            self._center_history.pop(0)
+            center_x = np.mean(landmarks[:, 0]) * w
+            center_y = np.mean(landmarks[:, 1]) * h
 
-        return HandLandmarks(
-            landmarks=landmarks,
-            handedness=handedness,
-            score=score,
-            center=(center_x, center_y),
-            bounding_box=bbox,
-        )
+            x_coords = landmarks[:, 0] * w
+            y_coords = landmarks[:, 1] * h
+            bbox = (
+                int(np.min(x_coords)),
+                int(np.min(y_coords)),
+                int(np.max(x_coords)),
+                int(np.max(y_coords)),
+            )
 
-    def get_smoothed_landmarks(self) -> Optional[np.ndarray]:
-        if len(self._landmark_history) < self.gesture_config.smoothing_frames:
-            return self._landmark_history[-1] if self._landmark_history else None
+            hist = self._hist(label)
+            hist["landmarks"].append(landmarks)
+            hist["centers"].append((center_x, center_y, time.time()))
+            if len(hist["landmarks"]) > self._max_history:
+                hist["landmarks"].pop(0)
+            if len(hist["centers"]) > self._max_history:
+                hist["centers"].pop(0)
 
-        recent = self._landmark_history[-self.gesture_config.smoothing_frames :]
+            hands.append(
+                HandLandmarks(
+                    landmarks=landmarks,
+                    handedness=label,
+                    score=score,
+                    center=(center_x, center_y),
+                    bounding_box=bbox,
+                )
+            )
+
+        # Drop histories for labels no longer visible so stale hands cannot
+        # leak into a later appearance.
+        for label in list(self._histories):
+            if label not in seen_labels:
+                del self._histories[label]
+
+        return hands
+
+    def get_smoothed_landmarks(self, label: Optional[str] = None) -> Optional[np.ndarray]:
+        hist = self._histories.get(label, {}) if label else None
+        landmark_history = hist.get("landmarks", []) if hist else []
+        if len(landmark_history) < self.gesture_config.smoothing_frames:
+            return landmark_history[-1] if landmark_history else None
+
+        recent = landmark_history[-self.gesture_config.smoothing_frames :]
         return np.mean(recent, axis=0)
 
-    def get_center_history(self) -> List[Tuple[float, float, float]]:
-        return self._center_history.copy()
+    def get_center_history(self, label: Optional[str] = None) -> List[Tuple[float, float, float]]:
+        if label:
+            return list(self._histories.get(label, {}).get("centers", []))
+        merged: List[Tuple[float, float, float]] = []
+        for hist in self._histories.values():
+            merged.extend(hist["centers"])
+        return merged
 
-    def get_landmark_history(self) -> List[np.ndarray]:
-        return self._landmark_history.copy()
+    def get_landmark_history(self, label: Optional[str] = None) -> List[np.ndarray]:
+        if label:
+            return list(self._histories.get(label, {}).get("landmarks", []))
+        merged: List[np.ndarray] = []
+        for hist in self._histories.values():
+            merged.extend(hist["landmarks"])
+        return merged
 
     def _clear_history(self) -> None:
-        self._landmark_history.clear()
-        self._center_history.clear()
+        self._histories.clear()
 
     def draw_landmarks(self, frame: np.ndarray, hand: HandLandmarks) -> np.ndarray:
         h, w = frame.shape[:2]

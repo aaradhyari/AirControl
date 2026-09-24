@@ -17,6 +17,16 @@ A native macOS menu-bar app that watches your MacBook's built-in camera, recogni
 
 One presentation = one action. Holding a gesture never repeats it; a different gesture works immediately without dropping your hand first.
 
+## Two-hand app switching
+
+Hold a **left-hand fist** (~0.5s) to enter app-switch mode — a faded overlay lists your open apps. While holding it, **swipe with the right hand** to move the selection (👈 previous app, 👉 next app). Release the fist to exit.
+
+- The left fist is a pure modifier here: it never fires fullscreen while held. A lone left fist released without any swipe still toggles fullscreen, exactly like before.
+- A lone right-hand fist keeps the original instant-fullscreen behavior.
+- Single-hand swipes keep switching Spaces; in app-switch mode the same motion switches apps instead — the active mode routes the swipe.
+- If the left hand blips out for < `app_switch_release_grace` (0.35s) the mode survives; longer exits it.
+- Tune with `app_switch_hold_time` / `app_switch_release_grace` in `config.py`.
+
 ## Requirements
 
 - macOS on Apple Silicon (M1/M2/M3/M4)
@@ -91,6 +101,8 @@ GestureConfig:  hold_time=0.45, action_cooldown=1.0, swipe_window=0.5,
 ShortcutConfig: left_space=("ctrl","left"), right_space=("ctrl","right"),
                 fullscreen=("cmd","ctrl","f")
 AppConfig:      enable_visual_feedback=True, feedback_duration=0.8
+GestureConfig (app-switch): app_switch_hold_time=0.45,
+                app_switch_release_grace=0.35 (action cooldown reused)
 ```
 
 If your Mission Control shortcuts differ from `Ctrl+←/→`, update `left_space`/`right_space` to match.

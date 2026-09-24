@@ -60,6 +60,7 @@ class GestureMenuBarApp(NSObject):
         self._camera_item: Optional[NSMenuItem] = None
         self._status_item_menu: Optional[NSMenuItem] = None
         self._access_item: Optional[NSMenuItem] = None
+        self._mode_item: Optional[NSMenuItem] = None
         self._feedback_item: Optional[NSMenuItem] = None
 
         self._action_callback: Optional[Callable] = None
@@ -127,6 +128,12 @@ class GestureMenuBarApp(NSObject):
         )
         self._access_item.setEnabled_(False)
         self._menu.addItem_(self._access_item)
+
+        self._mode_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Mode: Normal", None, ""
+        )
+        self._mode_item.setEnabled_(False)
+        self._menu.addItem_(self._mode_item)
 
         separator4 = NSMenuItem.separatorItem()
         self._menu.addItem_(separator4)
@@ -206,6 +213,12 @@ class GestureMenuBarApp(NSObject):
         if self._access_item:
             self._access_item.setTitle_(
                 "Accessibility: Granted" if ok else "Accessibility: Required"
+            )
+
+    def set_mode(self, mode: str) -> None:
+        if self._mode_item:
+            self._mode_item.setTitle_(
+                "Mode: App Switch" if mode == "app_switch" else "Mode: Normal"
             )
 
     def show_feedback(self, gesture: GestureType) -> None:

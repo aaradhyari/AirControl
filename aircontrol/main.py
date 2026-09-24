@@ -21,7 +21,9 @@ from aircontrol.actions.media import play_pause
 from aircontrol.actions.desktop import switch_space
 from aircontrol.actions.fullscreen import toggle_fullscreen
 from aircontrol.actions.volume import volume_up, volume_down
+from aircontrol.actions import appswitch
 from aircontrol.menubar.app import run_menu_bar_app, GestureMenuBarApp
+from aircontrol.menubar.switcher_overlay import SwitcherModel, AppSwitcherOverlay
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,8 +34,9 @@ logger = logging.getLogger(__name__)
 
 
 class AirControlApp:
-    def __init__(self, debug_mode: bool = False):
+    def __init__(self, debug_mode: bool = False, test_mode: bool = False):
         self.debug_mode = debug_mode
+        self.test_mode = test_mode
         if debug_mode:
             logging.getLogger().setLevel(logging.DEBUG)
 
@@ -45,6 +48,10 @@ class AirControlApp:
         self.running = False
         self.enabled = False
         self.camera_error = False
+        self._last_mode = "normal"
+
+        self._switcher_model = SwitcherModel()
+        self._overlay: Optional[AppSwitcherOverlay] = None
 
         self._processing_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -71,6 +78,10 @@ class AirControlApp:
             toggle_callback=self._on_toggle,
         )
         self.menu_app.set_accessibility_ok(access_ok)
+
+        self._overlay = AppSwitcherOverlay.alloc().initWithModel_(self._switcher_model)
+        if self._overlay is not None:
+            self._overlay.start()
 
         self.camera.set_frame_callback(self._process_frame)
         self.camera.set_error_callback(self._on_camera_error)
@@ -99,6 +110,10 @@ class AirControlApp:
                 logger.info("Gesture recognition enabled")
             else:
                 self.camera.stop()
+                self._switcher_model.update(False)
+                if self.menu_app:
+                    self.menu_app.set_mode("normal")
+                self._last_mode = "normal"
                 logger.info("Gesture recognition disabled")
 
     def _on_toggle(self, enabled: bool) -> None:
@@ -123,21 +138,73 @@ class AirControlApp:
             return
 
         try:
-            hand = self.hand_tracker.process(frame)
-            result = self.gesture_recognizer.process(hand)
+            hands = self.hand_tracker.process(frame)
+            frame_result = self.gesture_recognizer.process_frame(hands)
+            result = frame_result.legacy
 
             self._frame_count += 1
-            self._maybe_print_debug(hand, result)
+            self._maybe_print_debug(hands, frame_result)
 
             if result.gesture != GestureType.NONE and result.state == GestureState.ACTION_EXECUTED:
-                self._execute_action(result.gesture)
+                if not self.test_mode:
+                    self._execute_action(result.gesture)
                 if self.menu_app:
                     self.menu_app.show_feedback(result.gesture)
+
+            if frame_result.app_event is not None:
+                self._handle_app_switch_event(frame_result.app_event)
+
+            if frame_result.mode != self._last_mode:
+                self._last_mode = frame_result.mode
+                if self.menu_app:
+                    self.menu_app.set_mode(frame_result.mode)
+                logger.info(f"Mode: {frame_result.mode.upper().replace('_', ' ')}")
 
         except Exception as e:
             logger.error(f"Frame processing error: {e}")
 
-    def _maybe_print_debug(self, hand, result: GestureResult) -> None:
+    def _handle_app_switch_event(self, event) -> None:
+        try:
+            if event.kind == "enter":
+                targets = appswitch.list_targets()
+                selected = self._index_of_frontmost(targets)
+                self._switcher_model.update(True, targets, selected)
+                logger.info("App switch mode: overlay shown")
+            elif event.kind in ("next", "prev"):
+                if self.test_mode:
+                    return
+                targets = appswitch.list_targets()
+                if not targets:
+                    return
+                current = appswitch.frontmost_pid()
+                try:
+                    cur = next(i for i, t in enumerate(targets) if t["pid"] == current)
+                except StopIteration:
+                    cur = 0
+                delta = 1 if event.kind == "next" else -1
+                new_index = (cur + delta) % len(targets)
+                if appswitch.activate_pid(targets[new_index]["pid"]):
+                    self._switcher_model.update(True, targets, new_index)
+                    logger.info(f"App switch: {event.kind.upper()} -> {targets[new_index]['name']}")
+            elif event.kind == "exit":
+                self._switcher_model.update(False)
+                if event.consummate_fullscreen and not self.test_mode:
+                    logger.info("Action: FIST (left-fist release)")
+                    toggle_fullscreen()
+                    if self.menu_app:
+                        self.menu_app.show_feedback(GestureType.FIST)
+        except Exception as e:
+            logger.error(f"App switch handling failed: {e}")
+
+    @staticmethod
+    def _index_of_frontmost(targets) -> int:
+        try:
+            current = appswitch.frontmost_pid()
+            return next(i for i, t in enumerate(targets) if t["pid"] == current)
+        except StopIteration:
+            return 0
+
+    def _maybe_print_debug(self, hands, frame_result) -> None:
         if not self.debug_mode:
             return
 
@@ -147,17 +214,20 @@ class AirControlApp:
 
         self._last_debug_print = now
 
-        hand_status = "YES" if hand else "NO"
-        gesture_name = result.gesture.value if result.gesture != GestureType.NONE else "NONE"
-        state_name = result.state.value
-        confidence = f"{result.confidence:.2f}" if result.confidence > 0 else "0.00"
-        cooldown = f"{result.cooldown_remaining:.1f}s" if result.cooldown_remaining > 0 else "0.0s"
+        result = frame_result.legacy
+        snap = self.gesture_recognizer.get_debug_snapshot()
+        left = snap.get("left", {})
+        right = snap.get("right", {})
 
-        fps = self.camera.get_fps()
+        def fmt(side):
+            if not side.get("detected"):
+                return "no"
+            return f"yes {side.get('gesture')}({side.get('conf')})"
 
         print(
-            f"\rHand: {hand_status} | Gesture: {gesture_name} | Confidence: {confidence} | "
-            f"FPS: {fps:.1f} | State: {state_name} | Cooldown: {cooldown}",
+            f"\rL:[{fmt(left)}] R:[{fmt(right)}] Mode:{frame_result.mode} "
+            f"FistHold:{snap.get('fist_hold_ms', 0):.0f}ms "
+            f"Legacy:{result.gesture.value} FPS:{self.camera.get_fps():.1f}",
             end="",
             flush=True,
         )
@@ -191,6 +261,13 @@ class AirControlApp:
         self.camera.stop()
         self.hand_tracker.close()
 
+        if self._overlay is not None:
+            try:
+                self._overlay.close()
+            except Exception:
+                pass
+            self._overlay = None
+
         if self.menu_app:
             self.menu_app.stop()
 
@@ -221,7 +298,8 @@ def main() -> int:
         CONFIG.app.debug_mode = True
         logger.info("Running in TEST MODE - no macOS actions will be executed")
 
-    app = AirControlApp(debug_mode=args.debug or CONFIG.app.debug_mode)
+    app = AirControlApp(debug_mode=args.debug or CONFIG.app.debug_mode,
+                         test_mode=args.test)
 
     try:
         app.start()

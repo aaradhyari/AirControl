@@ -38,10 +38,10 @@ def run_test_mode(show_video: bool = False) -> None:
     gesture_recognizer = GestureRecognizer()
 
     print("=" * 60)
-    print("GESTURE CONTROL - TEST MODE")
+    print("AIRCONTROL - TEST MODE (no macOS actions fire)")
     print("=" * 60)
-    print("Show your hand to the camera.")
-    print("Recognized gestures will be displayed below.")
+    print("Show one hand for normal gestures, or hold LEFT FIST + swipe")
+    print("RIGHT hand for app-switch mode.")
     print("Press 'q' to quit, 's' to save a frame.")
     print("=" * 60)
     print()
@@ -50,13 +50,16 @@ def run_test_mode(show_video: bool = False) -> None:
     fps_start = time.time()
     current_fps = 0.0
     last_frame = {"frame": None}
+    infer_ms = {"ms": 0.0}
 
     def process_frame(frame):
         nonlocal frame_count, fps_start, current_fps
 
         last_frame["frame"] = frame
-        hand = hand_tracker.process(frame)
-        result = gesture_recognizer.process(hand)
+        t0 = time.time()
+        hands = hand_tracker.process(frame)
+        frame_result = gesture_recognizer.process_frame(hands)
+        infer_ms["ms"] = (time.time() - t0) * 1000.0
 
         frame_count += 1
         if time.time() - fps_start >= 1.0:
@@ -64,11 +67,13 @@ def run_test_mode(show_video: bool = False) -> None:
             frame_count = 0
             fps_start = time.time()
 
-        print_debug_info(hand, result, current_fps, gesture_recognizer)
+        print_debug_info(
+            hands, frame_result, current_fps, infer_ms["ms"], gesture_recognizer
+        )
 
         if show_video:
             display_frame = frame.copy()
-            if hand:
+            for hand in hands:
                 display_frame = hand_tracker.draw_landmarks(display_frame, hand)
             cv2.imshow("AirControl - Test Mode", display_frame)
 
@@ -100,29 +105,25 @@ def run_test_mode(show_video: bool = False) -> None:
         print("\nTest mode stopped.")
 
 
-def print_debug_info(hand, result, fps: float, recognizer: GestureRecognizer) -> None:
-    hand_status = "YES" if hand else "NO"
-    gesture_name = result.gesture.value.upper() if result.gesture != GestureType.NONE else "NONE"
-    state_name = result.state.value
-    confidence = f"{result.confidence:.2f}" if result.confidence > 0 else "0.00"
-    cooldown = f"{result.cooldown_remaining:.1f}s" if result.cooldown_remaining > 0 else "0.0s"
-    hold_time = f"{result.hold_time:.2f}s" if result.hold_time > 0 else "0.00s"
+def print_debug_info(hands, frame_result, fps: float, infer_ms: float,
+                     recognizer: GestureRecognizer) -> None:
+    snap = recognizer.get_debug_snapshot()
+    left = snap.get("left", {})
+    right = snap.get("right", {})
 
-    if hand:
-        finger_states = recognizer.get_finger_states()
-        fingers = []
-        for name, state in finger_states.items():
-            status = "↑" if state.extended else "↓"
-            fingers.append(f"{name[0]}:{status}")
-        finger_str = " ".join(fingers)
-    else:
-        finger_str = "N/A"
+    def fmt(side):
+        if not side.get("detected"):
+            return "no"
+        return f"yes {side.get('gesture')}({side.get('conf')})"
+
+    legacy = frame_result.legacy
+    app_event = frame_result.app_event
+    event_str = app_event.kind if app_event else "-"
 
     print(
-        f"\rHand: {hand_status} | Fingers: {finger_str} | "
-        f"Gesture: {gesture_name:15s} | Conf: {confidence} | "
-        f"FPS: {fps:5.1f} | State: {state_name:18s} | "
-        f"Hold: {hold_time} | Cooldown: {cooldown}",
+        f"\rL:[{fmt(left)}] R:[{fmt(right)}] Mode:{frame_result.mode} "
+        f"FistHold:{snap.get('fist_hold_ms', 0):.0f}ms Ev:{event_str} "
+        f"Legacy:{legacy.gesture.value} FPS:{fps:.1f} Infer:{infer_ms:.1f}ms",
         end="",
         flush=True,
     )

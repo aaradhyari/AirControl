@@ -1,8 +1,9 @@
 import time
 import logging
 import math
+import threading
 from enum import Enum
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass, field
 import numpy as np
 
@@ -47,6 +48,46 @@ class FingerState:
     confidence: float = 0.0
 
 
+class AppSwitchState(Enum):
+    IDLE = "idle"
+    CANDIDATE = "left_fist_candidate"
+    ACTIVE = "active"
+
+
+@dataclass
+class AppSwitchEvent:
+    kind: str  # "enter" | "exit" | "next" | "prev"
+    consummate_fullscreen: bool = False
+
+
+@dataclass
+class FrameResult:
+    legacy: "GestureResult"
+    app_event: Optional[AppSwitchEvent] = None
+    mode: str = "normal"  # "normal" | "app_switch"
+
+
+@dataclass
+class HandTrack:
+    """Independent per-hand state keyed by MediaPipe handedness label."""
+
+    label: str = ""
+    detected: bool = False
+    score: float = 0.0
+    landmarks: Optional[np.ndarray] = None
+    center: Tuple[float, float] = (0.0, 0.0)
+    bbox_width: float = 0.0
+    center_history: List[Tuple[float, float, float]] = field(default_factory=list)
+    swipe_locked: bool = False
+    candidate: GestureType = GestureType.NONE
+    candidate_start: float = 0.0
+    last_static: GestureType = GestureType.NONE
+    last_conf: float = 0.0
+    fingers: Dict[str, bool] = field(default_factory=dict)
+    last_seen: float = 0.0
+    missing_since: Optional[float] = None
+
+
 class GestureRecognizer:
     def __init__(self, config: Optional[object] = None):
         self.config = config or CONFIG
@@ -65,6 +106,18 @@ class GestureRecognizer:
         self._swipe_locked = False
         self._center_history: List[Tuple[float, float, float]] = []
         self._last_landmarks: Optional[np.ndarray] = None
+        self._legacy_suppress: set = set()
+        self._primary_label: Optional[str] = None
+
+        # Two-hand / app-switch controller state.
+        self._hands: Dict[str, HandTrack] = {}
+        self._as_state: AppSwitchState = AppSwitchState.IDLE
+        self._as_candidate_start: float = 0.0
+        self._as_candidate_center: Tuple[float, float] = (0.0, 0.0)
+        self._as_swipes: int = 0
+        self._as_last_action: float = 0.0
+        self._snapshot_lock = threading.Lock()
+        self._snapshot: Dict[str, Any] = {}
 
         self._finger_states: dict = {
             "thumb": FingerState(),
@@ -93,6 +146,247 @@ class GestureRecognizer:
             current_time, static_gesture, swipe_gesture, hand
         )
         return result
+
+    def process(self, hand: Optional[HandLandmarks]) -> GestureResult:
+        """Legacy single-hand entry point, preserved unchanged."""
+        current_time = time.time()
+
+        if hand is None:
+            return self._handle_no_hand(current_time)
+
+        self._hand_present = True
+        self._release_confirmed = False
+
+        landmarks = hand.landmarks
+        self._analyze_fingers(landmarks, hand.handedness)
+
+        static_gesture = self._recognize_static_gesture()
+        swipe_gesture = self._recognize_swipe(hand)
+
+        result = self._update_state_machine(
+            current_time, static_gesture, swipe_gesture, hand
+        )
+        return result
+
+    def process_frame(self, hands: Optional[List[HandLandmarks]]) -> FrameResult:
+        """Two-hand entry point. Updates independent per-hand tracks, runs
+        the app-switch controller (priority), then the legacy single-hand
+        machine on the primary hand (right if present, else left)."""
+        now = time.time()
+        hands = hands or []
+        by_label: Dict[str, HandLandmarks] = {}
+        for h in hands:
+            by_label.setdefault(h.handedness, h)
+        left = by_label.get("Left")
+        right = by_label.get("Right")
+        others = [h for k, h in by_label.items() if k not in ("Left", "Right")]
+
+        for label, h in (("Left", left), ("Right", right)):
+            track = self._hands.get(label)
+            if track is None:
+                track = HandTrack(label=label)
+                self._hands[label] = track
+            if h is None:
+                track.detected = False
+                if track.missing_since is None:
+                    track.missing_since = now
+                continue
+            track.detected = True
+            track.missing_since = None
+            track.score = h.score
+            track.landmarks = h.landmarks
+            track.center = h.center
+            track.bbox_width = max(1.0, float(h.bounding_box[2] - h.bounding_box[0]))
+            track.last_seen = now
+            track.center_history.append((h.center[0], h.center[1], now))
+            if len(track.center_history) > 10:
+                track.center_history.pop(0)
+            self._last_landmarks = h.landmarks
+            self._analyze_fingers(h.landmarks, h.handedness)
+            static_type, static_conf = self._recognize_static_gesture()
+            track.last_static = static_type
+            track.last_conf = static_conf
+            track.fingers = {
+                name: state.extended for name, state in self._finger_states.items()
+            }
+
+        app_event = self._update_app_switch(now, left, right)
+
+        if self._as_state == AppSwitchState.ACTIVE:
+            self._legacy_suppress = {"all"}
+        elif self._as_state == AppSwitchState.CANDIDATE:
+            self._legacy_suppress = {"fist"}
+        else:
+            self._legacy_suppress = set()
+
+        primary = right if right is not None else (left if left is not None else (others[0] if others else None))
+        primary_label = None
+        if primary is not None:
+            if primary is right:
+                primary_label = "Right"
+            elif primary is left:
+                primary_label = "Left"
+            else:
+                primary_label = primary.handedness
+        if primary_label != self._primary_label:
+            # A different hand took over: its trajectory must not blend
+            # with the previous hand's (teleport false-swipes).
+            self._primary_label = primary_label
+            self._center_history = []
+            self._candidate_gesture = None
+            if self._state not in (GestureState.IDLE,):
+                self._state = GestureState.IDLE
+
+        if primary is None:
+            legacy = self._handle_no_hand(now)
+        else:
+            self._hand_present = True
+            self._release_confirmed = False
+            self._last_landmarks = primary.landmarks
+            self._analyze_fingers(primary.landmarks, primary.handedness)
+            static_gesture = self._recognize_static_gesture()
+            swipe_gesture = self._recognize_swipe(primary)
+            legacy = self._update_state_machine(
+                now, static_gesture, swipe_gesture, primary
+            )
+
+        mode = "app_switch" if self._as_state == AppSwitchState.ACTIVE else "normal"
+        self._store_snapshot(now, left, right, legacy, mode)
+        return FrameResult(legacy=legacy, app_event=app_event, mode=mode)
+
+    def _update_app_switch(
+        self,
+        now: float,
+        left: Optional[HandLandmarks],
+        right: Optional[HandLandmarks],
+    ) -> Optional[AppSwitchEvent]:
+        """Left fist = modifier. Hold still ~app_switch_hold_time to arm,
+        then right-hand swipes step apps. Returns at most one event."""
+        cfg = self.gesture_config
+        track = self._hands.get("Left")
+        left_fist = (
+            left is not None
+            and track is not None
+            and track.last_static == GestureType.FIST
+            and track.last_conf >= cfg.confidence_threshold
+            and left.score >= cfg.confidence_threshold
+        )
+
+        if self._as_state == AppSwitchState.IDLE:
+            if left_fist:
+                self._as_state = AppSwitchState.CANDIDATE
+                self._as_candidate_start = now
+                self._as_candidate_center = left.center if left else (0.0, 0.0)
+                self._as_swipes = 0
+            return None
+
+        if self._as_state == AppSwitchState.CANDIDATE:
+            if not left_fist:
+                self._as_state = AppSwitchState.IDLE
+                return None
+            moved = 0.0
+            if left is not None:
+                moved = abs(left.center[0] - self._as_candidate_center[0]) + abs(
+                    left.center[1] - self._as_candidate_center[1]
+                )
+            if moved > cfg.static_stillness_px:
+                self._as_candidate_start = now
+                self._as_candidate_center = left.center if left else (0.0, 0.0)
+                return None
+            if now - self._as_candidate_start >= cfg.app_switch_hold_time:
+                self._as_state = AppSwitchState.ACTIVE
+                self._as_last_action = 0.0
+                return AppSwitchEvent(kind="enter")
+            return None
+
+        # ACTIVE
+        if left_fist:
+            if track is not None:
+                track.missing_since = None
+        else:
+            missing_since = track.missing_since if track else now
+            if missing_since is None:
+                if track is not None:
+                    track.missing_since = now
+                missing_since = now
+            if now - missing_since >= cfg.app_switch_release_grace:
+                self._as_state = AppSwitchState.IDLE
+                return AppSwitchEvent(
+                    kind="exit", consummate_fullscreen=(self._as_swipes == 0)
+                )
+            return None
+
+        if right is None:
+            return None
+        rtrack = self._hands.get("Right")
+        if rtrack is None:
+            return None
+        recent = self._slice_recent(rtrack.center_history)
+        if recent is None:
+            return None
+        if rtrack.swipe_locked:
+            xs = [p[0] for p in recent]
+            fresh = [abs(b - a) for a, b in zip(xs, xs[1:])][-4:]
+            if fresh and max(fresh) <= self.gesture_config.swipe_calm_px:
+                rtrack.swipe_locked = False
+            else:
+                return None
+        width = rtrack.bbox_width or 150.0
+        scale = min(2.0, max(0.5, width / 150.0))
+        swipe_type, swipe_conf = self._eval_swipe(recent, distance_scale=scale)
+        if swipe_type == GestureType.NONE or swipe_conf < cfg.confidence_threshold:
+            return None
+        if now - self._as_last_action < cfg.action_cooldown:
+            return None
+        rtrack.center_history = []
+        rtrack.swipe_locked = True
+        self._as_last_action = now
+        self._as_swipes += 1
+        self._last_action_time = now
+        return AppSwitchEvent(
+            kind="next" if swipe_type == GestureType.SWIPE_RIGHT else "prev"
+        )
+
+    def _store_snapshot(
+        self,
+        now: float,
+        left: Optional[HandLandmarks],
+        right: Optional[HandLandmarks],
+        legacy: GestureResult,
+        mode: str,
+    ) -> None:
+        left_track = self._hands.get("Left")
+        right_track = self._hands.get("Right")
+        fist_hold_ms = 0.0
+        if self._as_state == AppSwitchState.CANDIDATE:
+            fist_hold_ms = (now - self._as_candidate_start) * 1000.0
+        elif self._as_state == AppSwitchState.ACTIVE:
+            fist_hold_ms = (now - self._as_candidate_start) * 1000.0
+        snap = {
+            "mode": mode,
+            "app_switch_state": self._as_state.value,
+            "left": {
+                "detected": left is not None,
+                "score": round(left.score, 2) if left else 0.0,
+                "gesture": left_track.last_static.value if left_track else "none",
+                "conf": round(left_track.last_conf, 2) if left_track else 0.0,
+            },
+            "right": {
+                "detected": right is not None,
+                "score": round(right.score, 2) if right else 0.0,
+                "gesture": right_track.last_static.value if right_track else "none",
+                "conf": round(right_track.last_conf, 2) if right_track else 0.0,
+            },
+            "fist_hold_ms": round(fist_hold_ms, 0),
+            "legacy_gesture": legacy.gesture.value,
+            "legacy_state": legacy.state.value,
+        }
+        with self._snapshot_lock:
+            self._snapshot = snap
+
+    def get_debug_snapshot(self) -> Dict[str, Any]:
+        with self._snapshot_lock:
+            return dict(self._snapshot)
 
     def _handle_no_hand(self, current_time: float) -> GestureResult:
         self._needs_release = False
@@ -234,33 +528,24 @@ class GestureRecognizer:
     def _get_last_landmarks(self) -> Optional[np.ndarray]:
         return self._last_landmarks
 
-    def _recognize_swipe(self, hand: HandLandmarks) -> Tuple[GestureType, float]:
-        history = self._get_center_history()
+    def _slice_recent(
+        self, history: List[Tuple[float, float, float]]
+    ) -> Optional[List[Tuple[float, float, float]]]:
         if len(history) < 3:
-            return GestureType.NONE, 0.0
-
+            return None
         current_time = time.time()
         window_start = current_time - self.gesture_config.swipe_window
-
         recent = [(x, y, t) for x, y, t in history if t >= window_start]
-        if len(recent) < 3:
-            return GestureType.NONE, 0.0
+        return recent if len(recent) >= 3 else None
 
-        if self._swipe_locked:
-            # One motion = one swipe: stay locked until the hand calms down.
-            xs = [p[0] for p in recent]
-            peak = max((abs(b - a) for a, b in zip(xs, xs[1:])), default=0.0)
-            if peak <= 15.0:
-                self._swipe_locked = False
-            else:
-                return GestureType.NONE, 0.0
-
-        x_start = recent[0][0]
-        x_end = recent[-1][0]
-        y_start = recent[0][1]
-        y_end = recent[-1][1]
-        t_start = recent[0][2]
-        t_end = recent[-1][2]
+    def _eval_swipe(
+        self, recent: List[Tuple[float, float, float]], distance_scale: float = 1.0
+    ) -> Tuple[GestureType, float]:
+        """Pure trajectory math shared by the single-hand and two-hand
+        paths. distance_scale normalizes the pixel threshold to hand size
+        (hand-relative, so distance from camera doesn't change sensitivity)."""
+        x_start, y_start, t_start = recent[0]
+        x_end, y_end, t_end = recent[-1]
 
         dx = x_end - x_start
         dy = y_end - y_start
@@ -268,6 +553,8 @@ class GestureRecognizer:
 
         if dt < 0.1:
             return GestureType.NONE, 0.0
+
+        min_distance = self.gesture_config.min_swipe_distance * distance_scale
 
         velocity = abs(dx) / dt
         vertical_disp = abs(dy)
@@ -278,7 +565,7 @@ class GestureRecognizer:
         if vertical_disp > self.gesture_config.max_vertical_displacement:
             return GestureType.NONE, 0.0
 
-        if abs(dx) < self.gesture_config.min_swipe_distance:
+        if abs(dx) < min_distance:
             return GestureType.NONE, 0.0
 
         # Direction consistency: most *moving* frame-to-frame x-steps must
@@ -304,15 +591,32 @@ class GestureRecognizer:
         if gaps and max(gaps) > 0.25:
             return GestureType.NONE, 0.0
 
-        if dx < 0:
-            confidence = min(1.0, abs(dx) / self.gesture_config.min_swipe_distance)
-            return GestureType.SWIPE_LEFT, confidence
-        else:
-            confidence = min(1.0, abs(dx) / self.gesture_config.min_swipe_distance)
-            return GestureType.SWIPE_RIGHT, confidence
+        confidence = min(1.0, abs(dx) / min_distance)
+        return (GestureType.SWIPE_LEFT if dx < 0 else GestureType.SWIPE_RIGHT), confidence
+
+    def _recognize_swipe(self, hand: HandLandmarks) -> Tuple[GestureType, float]:
+        recent = self._slice_recent(self._get_center_history())
+        if recent is None:
+            return GestureType.NONE, 0.0
+
+        if self._swipe_locked:
+            # One motion = one swipe: stay locked until the hand calms down.
+            # Only the freshest steps count -- old fast points elsewhere in
+            # the window must not keep a stopped hand locked.
+            xs = [p[0] for p in recent]
+            fresh = [abs(b - a) for a, b in zip(xs, xs[1:])][-4:]
+            if fresh and max(fresh) <= self.gesture_config.swipe_calm_px:
+                self._swipe_locked = False
+            else:
+                return GestureType.NONE, 0.0
+
+        return self._eval_swipe(recent, distance_scale=1.0)
 
     def _get_center_history(self) -> List[Tuple[float, float, float]]:
         return self._center_history
+
+    def _suppressed(self, token: str) -> bool:
+        return "all" in self._legacy_suppress or token in self._legacy_suppress
 
     def _update_state_machine(
         self,
@@ -340,7 +644,7 @@ class GestureRecognizer:
             self._candidate_gesture = None
 
         if swipe_type != GestureType.NONE and swipe_conf >= self.gesture_config.confidence_threshold:
-            if not in_cooldown:
+            if not in_cooldown and not self._suppressed("swipe"):
                 return self._execute_action(current_time, swipe_type, swipe_conf)
 
         if static_type != GestureType.NONE and static_conf >= self.gesture_config.confidence_threshold:
@@ -386,9 +690,11 @@ class GestureRecognizer:
                         stability = self._recent_static.count(static_type) / max(
                             1, len(self._recent_static)
                         )
+                        fire_token = "fist" if static_type == GestureType.FIST else "static"
                         if (
                             stability >= self.gesture_config.static_stability
                             and not in_cooldown
+                            and not self._suppressed(fire_token)
                         ):
                             return self._execute_action(current_time, static_type, static_conf)
                         # else: hold complete but classification flapping or
@@ -458,6 +764,13 @@ class GestureRecognizer:
         self._release_confirmed = False
         self._needs_release = False
         self._swipe_locked = False
+        self._legacy_suppress = set()
+        self._primary_label = None
+        self._hands = {}
+        self._as_state = AppSwitchState.IDLE
+        self._as_candidate_start = 0.0
+        self._as_swipes = 0
+        self._as_last_action = 0.0
         for state in self._finger_states.values():
             state.extended = False
             state.confidence = 0.0

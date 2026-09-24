@@ -18,8 +18,15 @@ class GestureConfig:
     min_swipe_distance: int = 120
     min_swipe_velocity: float = 300.0
     max_vertical_displacement: int = 80
+    # Per-frame calm ceiling: after a swipe fires, further swipes stay
+    # locked until every recent step is at most this many pixels (the hand
+    # stopped). Above it counts as continued motion: one motion, one swipe.
+    swipe_calm_px: float = 9.0
     static_stillness_px: float = 40.0
     static_stability: float = 0.7
+    # Two-hand app-switch mode (left fist held = modifier, right swipe = step).
+    app_switch_hold_time: float = 0.45
+    app_switch_release_grace: float = 0.35
     volume_step: int = 5
     confidence_threshold: float = 0.7
     smoothing_frames: int = 3
