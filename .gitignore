@@ -20,3 +20,5 @@ debug_frame_*.jpg
 
 # Release artifacts (attach to GitHub Releases, never commit)
 *.zip
+
+*.dmg
